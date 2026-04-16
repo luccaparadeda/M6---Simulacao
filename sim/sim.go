@@ -4,14 +4,12 @@ import (
 	"fmt"
 	"sort"
 
+	"queuesim/logger"
 	"queuesim/queue"
 	"queuesim/rng"
 	"queuesim/scheduler"
 )
 
-// Router decide o destino de um cliente ao sair de uma fila.
-// SEMPRE consome 1 número aleatório (mesmo com rota determinística),
-// conforme convenção acadêmica de simulação discreta.
 type Router interface {
 	Next(fromQueueID string, r *rng.LCG) (string, bool)
 }
@@ -28,9 +26,6 @@ func NewProbabilityRouter(queues []*queue.Queue) *ProbabilityRouter {
 	return &ProbabilityRouter{Routes: m}
 }
 
-// Next sorteia U(0,1) e percorre as probabilidades acumuladas.
-// Se a fila não tem rotas configuradas, NÃO consome RNG (saída imediata).
-// Caso contrário, consome 1 RNG independentemente das probabilidades.
 func (p *ProbabilityRouter) Next(from string, r *rng.LCG) (string, bool) {
 	routes := p.Routes[from]
 	if len(routes) == 0 {
@@ -47,7 +42,7 @@ func (p *ProbabilityRouter) Next(from string, r *rng.LCG) (string, bool) {
 			return rt.ID, true
 		}
 	}
-	return "", true // probabilidade residual => saída do sistema
+	return "", true
 }
 
 type Simulator struct {
@@ -56,6 +51,7 @@ type Simulator struct {
 	Sched     *scheduler.Scheduler
 	Rng       *rng.LCG
 	Router    Router
+	Logger    logger.Logger
 	Clock     float64
 	lastClock float64
 }
@@ -91,13 +87,36 @@ func (s *Simulator) accumulateAll(now float64) {
 	s.lastClock = now
 }
 
-// Run executa até que o RNG tenha sido esgotado (100.000º número consumido).
-// Semântica: se um evento em andamento consumir o 100.000º número, esse evento
-// termina sua mutação de estado normalmente; o próximo evento NÃO é iniciado.
-// Sampling é feito ANTES de mutar estado para evitar inconsistências.
+func (s *Simulator) snapshot() (map[string]int, map[string]int) {
+	pops := make(map[string]int, len(s.Order))
+	losses := make(map[string]int, len(s.Order))
+	for _, id := range s.Order {
+		pops[id] = s.Queues[id].Population
+		losses[id] = s.Queues[id].Losses
+	}
+	return pops, losses
+}
+
+func (s *Simulator) log(event, queueID, detail string) {
+	if s.Logger == nil {
+		return
+	}
+	pops, losses := s.snapshot()
+	s.Logger.Log(logger.Entry{
+		RNGCount:    s.Rng.Count(),
+		Time:        s.Clock,
+		Event:       event,
+		QueueID:     queueID,
+		Detail:      detail,
+		Populations: pops,
+		Losses:      losses,
+	})
+}
+
 func (s *Simulator) Run() {
 	for {
 		if s.Rng.Exhausted() {
+			s.log("STOP", "", "RNG budget exhausted")
 			return
 		}
 		ev := s.Sched.Next()
@@ -110,22 +129,22 @@ func (s *Simulator) Run() {
 		switch ev.Kind {
 		case scheduler.Arrival:
 			if !s.handleArrival(s.Queues[ev.QueueID]) {
+				s.log("STOP", ev.QueueID, "RNG budget exhausted during arrival")
 				return
 			}
 		case scheduler.Departure:
 			if !s.handleDeparture(s.Queues[ev.QueueID]) {
+				s.log("STOP", ev.QueueID, "RNG budget exhausted during departure")
 				return
 			}
 		}
 	}
 }
 
-// handleArrival processa chegada externa. Retorna false se o RNG esgotou
-// antes de completar o sampling necessário (estado não é mutado nesse caso).
 func (s *Simulator) handleArrival(q *queue.Queue) bool {
-	// 1) Pré-sampling de tudo que o evento precisa.
 	if !q.CanAccept() {
 		q.Losses++
+		s.log("LOSS", q.Cfg.ID, fmt.Sprintf("queue full (cap=%d)", q.Cfg.Capacity))
 	} else {
 		needsService := q.HasFreeServer()
 		var serviceDur float64
@@ -143,9 +162,12 @@ func (s *Simulator) handleArrival(q *queue.Queue) bool {
 				Kind:    scheduler.Departure,
 				QueueID: q.Cfg.ID,
 			})
+			s.log("ARRIVAL", q.Cfg.ID, fmt.Sprintf("admitted, service starts (dur=%.4f)", serviceDur))
+		} else {
+			s.log("ARRIVAL", q.Cfg.ID, "admitted, waiting in queue")
 		}
 	}
-	// 2) Agendar próxima chegada externa (se aplicável).
+
 	if q.Cfg.HasExternal {
 		d, ok := s.Rng.Between(q.Cfg.ArrivalMin, q.Cfg.ArrivalMax)
 		if !ok {
@@ -156,21 +178,17 @@ func (s *Simulator) handleArrival(q *queue.Queue) bool {
 			Kind:    scheduler.Arrival,
 			QueueID: q.Cfg.ID,
 		})
+		s.log("SCHEDULE", q.Cfg.ID, fmt.Sprintf("next arrival at %.4f", s.Clock+d))
 	}
 	return true
 }
 
-// handleDeparture processa fim de serviço: pré-sampla rota, próximo serviço
-// desta fila (se há backlog) e serviço no destino (se aceita e tem servidor livre),
-// e só então muta estado.
 func (s *Simulator) handleDeparture(q *queue.Queue) bool {
-	// 1) Rota (sempre consome 1 RNG se há rotas configuradas).
 	routeID, ok := s.Router.Next(q.Cfg.ID, s.Rng)
 	if !ok {
 		return false
 	}
 
-	// 2) Próximo serviço desta fila, se ainda há cliente esperando após a saída.
 	ownNeedsNext := q.Population-1 >= q.Cfg.Servers
 	var ownNextDur float64
 	if ownNeedsNext {
@@ -181,7 +199,6 @@ func (s *Simulator) handleDeparture(q *queue.Queue) bool {
 		ownNextDur = d
 	}
 
-	// 3) Transição para destino (se houver rota interna).
 	var dest *queue.Queue
 	destWillLoss := false
 	destStartsService := false
@@ -200,18 +217,22 @@ func (s *Simulator) handleDeparture(q *queue.Queue) bool {
 		}
 	}
 
-	// 4) Mutações atômicas (todos os RNGs já foram obtidos com sucesso).
 	q.Population--
+	s.log("DEPARTURE", q.Cfg.ID, fmt.Sprintf("service complete, route -> %s", routeLabel(routeID)))
+
 	if ownNeedsNext {
 		s.Sched.Schedule(&scheduler.Event{
 			Time:    s.Clock + ownNextDur,
 			Kind:    scheduler.Departure,
 			QueueID: q.Cfg.ID,
 		})
+		s.log("SCHEDULE", q.Cfg.ID, fmt.Sprintf("next service ends at %.4f", s.Clock+ownNextDur))
 	}
+
 	if dest != nil {
 		if destWillLoss {
 			dest.Losses++
+			s.log("LOSS", dest.Cfg.ID, fmt.Sprintf("routed from %s but queue full (cap=%d)", q.Cfg.ID, dest.Cfg.Capacity))
 		} else {
 			dest.Population++
 			if destStartsService {
@@ -220,10 +241,20 @@ func (s *Simulator) handleDeparture(q *queue.Queue) bool {
 					Kind:    scheduler.Departure,
 					QueueID: dest.Cfg.ID,
 				})
+				s.log("ARRIVAL", dest.Cfg.ID, fmt.Sprintf("routed from %s, service starts (dur=%.4f)", q.Cfg.ID, destDur))
+			} else {
+				s.log("ARRIVAL", dest.Cfg.ID, fmt.Sprintf("routed from %s, waiting in queue", q.Cfg.ID))
 			}
 		}
 	}
 	return true
+}
+
+func routeLabel(id string) string {
+	if id == "" {
+		return "EXIT"
+	}
+	return id
 }
 
 func (s *Simulator) Report() {

@@ -36,6 +36,7 @@ This project was built as part of an Operations Research / Simulation course. It
 - Deterministic LCG with a hard **budget of N random numbers** (the canonical stopping condition used in simulation coursework).
 - Atomic event processing: random numbers for an event are sampled **before** mutating state, so the run never leaves the system in an inconsistent state when the RNG budget is hit.
 - Final report with per-queue state-time distribution, state probabilities, loss count, and total simulated time.
+- Optional **CSV event log** (`-log` flag) for detailed post-simulation analysis.
 - Single static binary — no runtime dependencies.
 
 ## Quick start
@@ -78,6 +79,37 @@ In PowerShell or CMD from the folder where you downloaded the file:
 ```
 
 > If SmartScreen warns about an unsigned binary, click *More info → Run anyway*.
+
+### Command-line flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `-seed` | `12345` | LCG seed for the random number generator. |
+| `-n` | `100000` | RNG budget — simulation stops after consuming N random numbers. |
+| `-log` | *(disabled)* | Path to write an event log. Format is chosen by extension: `.json`/`.jsonl` → JSON Lines, anything else → CSV. |
+| `-json` | `false` | Output the final report as JSON instead of plain text. |
+
+Examples:
+
+```bash
+# Report only (no log file)
+./queuesim-darwin-arm64
+
+# Report + CSV event log
+./queuesim-darwin-arm64 -log=simulation.csv
+
+# Report + JSON Lines event log
+./queuesim-darwin-arm64 -log=events.jsonl
+
+# JSON report to stdout
+./queuesim-darwin-arm64 -json
+
+# Custom seed and budget
+./queuesim-darwin-arm64 -seed=99999 -n=50000
+
+# Everything combined
+./queuesim-darwin-arm64 -seed=42 -n=200000 -log=run.csv -json
+```
 
 ### Run from source
 
@@ -129,6 +161,30 @@ Números aleatórios consumidos: 100000
   ...
 ```
 
+## Event log (CSV)
+
+When run with `-log=simulation.csv`, the simulator writes a detailed CSV with one row per event. This file can be opened in Excel, Google Sheets, or processed with pandas/R for custom analysis.
+
+| Column | Description |
+|---|---|
+| `rng_count` | Total RNG numbers consumed so far |
+| `time` | Simulation clock at the moment of the event |
+| `event` | `ARRIVAL`, `DEPARTURE`, `LOSS`, `SCHEDULE`, or `STOP` |
+| `queue` | Which queue the event belongs to |
+| `detail` | Human-readable description (service duration, route, loss reason) |
+| `<QueueID>_pop` | Population snapshot of each queue after the event |
+| `<QueueID>_losses` | Cumulative losses of each queue after the event |
+
+Sample rows:
+
+```csv
+rng_count,time,event,queue,detail,Q1_pop,Q1_losses,Q2_pop,Q2_losses
+1,1.5000,ARRIVAL,Q1,"admitted, service starts (dur=3.0204)",1,0,0,0
+2,1.5000,SCHEDULE,Q1,next arrival at 2.5496,1,0,0,0
+6,4.5204,DEPARTURE,Q1,"service complete, route -> Q2",1,0,0,0
+6,4.5204,ARRIVAL,Q2,"routed from Q1, service starts (dur=2.1125)",1,0,1,0
+```
+
 ## How the simulator works
 
 1. **Scheduler** holds a priority queue of events `{Arrival, Departure}` ordered by time.
@@ -170,6 +226,8 @@ These are the conventions the simulator adopts. They match the ones typically as
 │   └── queue.go            # G/G/c/K queue struct + routing configuration
 ├── scheduler/
 │   └── scheduler.go        # min-heap of timed events
+├── logger/
+│   └── logger.go           # CSV event logger
 ├── sim/
 │   └── sim.go              # Simulator + Router interface + ProbabilityRouter
 ├── .github/workflows/build.yml
@@ -243,9 +301,10 @@ The `.github/workflows/build.yml` workflow:
 - Runs `go vet` on every push and PR.
 - Cross-compiles `queuesim` for `linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64`, `windows/amd64` with `CGO_ENABLED=0` (fully static binaries).
 - Uploads each binary as a workflow artifact.
-- When a tag `v*` is pushed, attaches the binaries to a GitHub Release and auto-generates release notes.
+- On every push to `main`, updates a rolling **"Latest (main)"** pre-release with fresh binaries.
+- When a tag `v*` is pushed, creates a versioned GitHub Release with auto-generated release notes.
 
-To cut a release:
+To cut a versioned release:
 
 ```bash
 git tag v0.1.0
