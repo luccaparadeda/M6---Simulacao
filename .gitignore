@@ -1,6 +1,7 @@
 /dist/
 /queuesim
 /queuesim.exe
+simulation.csv
 *.out
 .DS_Store
 .idea/
