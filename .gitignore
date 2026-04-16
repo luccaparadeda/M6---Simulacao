@@ -1,0 +1,7 @@
+/dist/
+/queuesim
+/queuesim.exe
+*.out
+.DS_Store
+.idea/
+.vscode/
