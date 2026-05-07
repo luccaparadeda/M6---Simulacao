@@ -1,145 +1,112 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
-	"strings"
 
-	"queuesim/logger"
+	"queuesim/config"
 	"queuesim/queue"
 	"queuesim/rng"
 	"queuesim/sim"
 )
 
 func main() {
-	seed := flag.Uint64("seed", 12345, "LCG seed for the random number generator")
-	n := flag.Int("n", 100_000, "RNG budget (stop after consuming N random numbers)")
-	logPath := flag.String("log", "", "path to write the event log (e.g. -log=simulation.csv)")
-	jsonReport := flag.Bool("json", false, "output the final report as JSON instead of plain text")
+	configPath := flag.String("config", "simulation.yml", "path to YAML simulation config")
 	flag.Parse()
 
-	configs := []queue.Config{
-		{
-			ID:          "Q1",
-			Servers:     2,
-			Capacity:    3,
-			ArrivalMin:  1,
-			ArrivalMax:  4,
-			ServiceMin:  3,
-			ServiceMax:  4,
-			HasExternal: true,
-			Routes: []queue.Route{
-				{ID: "Q2", Probability: 1.0},
-			},
-		},
-		{
-			ID:         "Q2",
-			Servers:    1,
-			Capacity:   5,
-			ServiceMin: 2,
-			ServiceMax: 3,
-		},
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
+		os.Exit(1)
 	}
 
-	r := rng.NewLCG(*seed, *n)
-	s := sim.New(configs, r)
+	configs := cfg.ToQueueConfigs()
 
-	if *logPath != "" {
-		queueIDs := make([]string, len(configs))
-		for i, c := range configs {
-			queueIDs[i] = c.ID
+	runs := make([]*sim.Simulator, 0, len(cfg.Simulation.Seeds))
+	for i, seed := range cfg.Simulation.Seeds {
+		fmt.Printf("Simulation: #%d\n", i+1)
+		fmt.Printf("...simulating with random numbers (seed '%d')...\n", seed)
+
+		r := rng.NewLCG(seed, cfg.Simulation.RNGPerSeed)
+		s := sim.New(configs, r)
+		s.ScheduleFirstArrival(cfg.Simulation.FirstArrival.Queue, cfg.Simulation.FirstArrival.Time)
+		s.Run()
+		runs = append(runs, s)
+	}
+
+	printFooter()
+	printReport(configs, runs)
+}
+
+func printFooter() {
+	fmt.Println("=========================================================")
+	fmt.Println("=================    END OF SIMULATION   ================")
+	fmt.Println("=========================================================")
+	fmt.Println()
+}
+
+func printReport(configs []queue.Config, runs []*sim.Simulator) {
+	fmt.Println("=========================================================")
+	fmt.Println("======================    REPORT   ======================")
+	fmt.Println("=========================================================")
+
+	for _, c := range configs {
+		fmt.Println("*********************************************************")
+		fmt.Printf("Queue:   %s (%s)\n", c.ID, ggckLabel(c))
+		if c.HasExternal {
+			fmt.Printf("Arrival: %s ... %s\n", trimZero(c.ArrivalMin), trimZero(c.ArrivalMax))
 		}
+		fmt.Printf("Service: %s ... %s\n", trimZero(c.ServiceMin), trimZero(c.ServiceMax))
+		fmt.Println("*********************************************************")
+		fmt.Println("   State               Time               Probability")
 
-		lg, err := newLogger(*logPath, queueIDs)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error creating log file: %v\n", err)
-			os.Exit(1)
-		}
-		defer lg.Close()
-		s.Logger = lg
-	}
-
-	s.ScheduleFirstArrival("Q1", 1.5)
-	s.Run()
-
-	if *jsonReport {
-		reportJSON(s)
-	} else {
-		s.Report()
-	}
-
-	if *logPath != "" {
-		fmt.Fprintf(os.Stderr, "Log de eventos salvo em: %s\n", *logPath)
-	}
-}
-
-// newLogger selects the log format strategy based on file extension.
-// .json / .jsonl → JSONLogger, anything else → CSVLogger.
-func newLogger(path string, queueIDs []string) (logger.Logger, error) {
-	ext := strings.ToLower(filepath.Ext(path))
-	switch ext {
-	case ".json", ".jsonl":
-		return logger.NewJSON(path)
-	default:
-		return logger.NewCSV(path, queueIDs)
-	}
-}
-
-type queueReport struct {
-	ID          string             `json:"id"`
-	Servers     int                `json:"servers"`
-	Capacity    int                `json:"capacity"`
-	Losses      int                `json:"losses"`
-	States      []stateReport      `json:"states"`
-}
-
-type stateReport struct {
-	State       int     `json:"state"`
-	Time        float64 `json:"time"`
-	Probability float64 `json:"probability"`
-}
-
-type fullReport struct {
-	GlobalTime float64       `json:"global_time"`
-	RNGCount   int           `json:"rng_count"`
-	Queues     []queueReport `json:"queues"`
-}
-
-func reportJSON(s *sim.Simulator) {
-	rep := fullReport{
-		GlobalTime: s.Clock,
-		RNGCount:   s.Rng.Count(),
-	}
-	for _, id := range s.Order {
-		q := s.Queues[id]
-		qr := queueReport{
-			ID:       id,
-			Servers:  q.Cfg.Servers,
-			Capacity: q.Cfg.Capacity,
-			Losses:   q.Losses,
-		}
+		stateTimes := make(map[int]float64)
+		losses := 0
 		total := 0.0
-		states := make([]int, 0, len(q.StateTimes))
-		for k := range q.StateTimes {
+		for _, s := range runs {
+			q := s.Queues[c.ID]
+			for k, v := range q.StateTimes {
+				stateTimes[k] += v
+				total += v
+			}
+			losses += q.Losses
+		}
+		states := make([]int, 0, len(stateTimes))
+		for k := range stateTimes {
 			states = append(states, k)
-			total += q.StateTimes[k]
 		}
 		sort.Ints(states)
 		for _, st := range states {
-			t := q.StateTimes[st]
+			t := stateTimes[st]
 			p := 0.0
 			if total > 0 {
-				p = t / total
+				p = t / total * 100
 			}
-			qr.States = append(qr.States, stateReport{State: st, Time: t, Probability: p})
+			fmt.Printf("%7d%21.4f%21.2f%%\n", st, t, p)
 		}
-		rep.Queues = append(rep.Queues, qr)
+		fmt.Println()
+		fmt.Printf("Number of losses: %d\n\n", losses)
 	}
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	enc.Encode(rep)
+
+	avg := 0.0
+	for _, s := range runs {
+		avg += s.Clock
+	}
+	avg /= float64(len(runs))
+	fmt.Println("=========================================================")
+	fmt.Printf("Simulation average time: %.4f\n", avg)
+	fmt.Println("=========================================================")
+}
+
+func ggckLabel(c queue.Config) string {
+	if c.Capacity < 0 {
+		return fmt.Sprintf("G/G/%d", c.Servers)
+	}
+	return fmt.Sprintf("G/G/%d/%d", c.Servers, c.Capacity)
+}
+
+func trimZero(f float64) string {
+	return fmt.Sprintf("%.1f", f)
 }

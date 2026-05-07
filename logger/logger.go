@@ -23,7 +23,6 @@ type Logger interface {
 	Close()
 }
 
-// CSVLogger writes one row per event to a CSV file.
 type CSVLogger struct {
 	file     *os.File
 	writer   *csv.Writer
@@ -71,7 +70,6 @@ func (l *CSVLogger) Close() {
 	l.file.Close()
 }
 
-// JSONLogger writes one JSON object per line (JSONL) to a file.
 type JSONLogger struct {
 	file    *os.File
 	encoder *json.Encoder

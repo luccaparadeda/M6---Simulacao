@@ -5,8 +5,8 @@ import "container/heap"
 type EventKind int
 
 const (
-	Arrival EventKind = iota // chegada externa
-	Departure                 // fim de serviço em uma fila
+	Arrival EventKind = iota
+	Departure
 )
 
 type Event struct {

@@ -1,7 +1,5 @@
 package rng
 
-// LCG é um gerador congruente linear simples.
-// Xn+1 = (a*Xn + c) mod M
 type LCG struct {
 	a, c, m uint64
 	state   uint64
@@ -19,13 +17,10 @@ func NewLCG(seed uint64, limit int) *LCG {
 	}
 }
 
-// Count retorna quantos números já foram consumidos.
 func (g *LCG) Count() int { return g.count }
 
-// Exhausted indica se o limite global de números aleatórios foi atingido.
 func (g *LCG) Exhausted() bool { return g.count >= g.limit }
 
-// NextUniform retorna um U(0,1). Retorna (0, false) se o limite foi atingido.
 func (g *LCG) NextUniform() (float64, bool) {
 	if g.Exhausted() {
 		return 0, false
@@ -35,7 +30,6 @@ func (g *LCG) NextUniform() (float64, bool) {
 	return float64(g.state) / float64(g.m), true
 }
 
-// Between retorna U(a,b) consumindo um número aleatório.
 func (g *LCG) Between(a, b float64) (float64, bool) {
 	u, ok := g.NextUniform()
 	if !ok {

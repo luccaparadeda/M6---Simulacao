@@ -16,6 +16,7 @@ This project was built as part of an Operations Research / Simulation course. It
 - [Quick start](#quick-start)
   - [Download a prebuilt binary](#download-a-prebuilt-binary)
   - [Run from source](#run-from-source)
+- [T1 — Validation against `simulator.jar`](#t1--validation-against-simulatorjar)
 - [Sample output](#sample-output)
 - [How the simulator works](#how-the-simulator-works)
 - [Business rules](#business-rules)
@@ -33,10 +34,11 @@ This project was built as part of an Operations Research / Simulation course. It
 - Discrete-event simulation with a min-heap event scheduler.
 - Generic **G/G/c/K** queues: configurable arrival interval, service interval, number of servers, capacity, and routing table.
 - Probabilistic routing between queues; residual probability = exit from system.
-- Deterministic LCG with a hard **budget of N random numbers** (the canonical stopping condition used in simulation coursework).
+- Deterministic LCG with a hard **budget of N random numbers per seed** (the canonical stopping condition used in simulation coursework).
+- Multi-seed orchestration: runs N independent simulations and aggregates results.
 - Atomic event processing: random numbers for an event are sampled **before** mutating state, so the run never leaves the system in an inconsistent state when the RNG budget is hit.
-- Final report with per-queue state-time distribution, state probabilities, loss count, and total simulated time.
-- Optional **CSV event log** (`-log` flag) for detailed post-simulation analysis.
+- YAML-driven scenario file (`simulation.yml`) — no recompilation needed to change the network.
+- Final report formatted to match the academic `simulator.jar` output for direct comparison.
 - Single static binary — no runtime dependencies.
 
 ## Quick start
@@ -84,31 +86,16 @@ In PowerShell or CMD from the folder where you downloaded the file:
 
 | Flag | Default | Description |
 |---|---|---|
-| `-seed` | `12345` | LCG seed for the random number generator. |
-| `-n` | `100000` | RNG budget — simulation stops after consuming N random numbers. |
-| `-log` | *(disabled)* | Path to write an event log. Format is chosen by extension: `.json`/`.jsonl` → JSON Lines, anything else → CSV. |
-| `-json` | `false` | Output the final report as JSON instead of plain text. |
+| `-config` | `simulation.yml` | Path to the YAML scenario file (queues, routes, seeds, RNG budget). |
 
-Examples:
+The full scenario — number of queues, servers, capacity, service/arrival intervals, routing table, list of seeds, RNG budget per seed, and the time of the first external arrival — is defined in `simulation.yml`. See [Configuration](#configuration) for the schema.
 
 ```bash
-# Report only (no log file)
+# Run with the default config file (./simulation.yml)
 ./queuesim-darwin-arm64
 
-# Report + CSV event log
-./queuesim-darwin-arm64 -log=simulation.csv
-
-# Report + JSON Lines event log
-./queuesim-darwin-arm64 -log=events.jsonl
-
-# JSON report to stdout
-./queuesim-darwin-arm64 -json
-
-# Custom seed and budget
-./queuesim-darwin-arm64 -seed=99999 -n=50000
-
-# Everything combined
-./queuesim-darwin-arm64 -seed=42 -n=200000 -log=run.csv -json
+# Use a custom path
+./queuesim-darwin-arm64 -config=path/to/scenario.yml
 ```
 
 ### Run from source
@@ -118,14 +105,15 @@ Examples:
 ```bash
 git clone git@github.com:luccaparadeda/M6---Simulacao.git
 cd M6---Simulacao
-go run .
+go run . -config=simulation.yml
 ```
 
 To produce a binary locally:
 
 ```bash
 go build -trimpath -ldflags="-s -w" -o queuesim .
-./queuesim
+./queuesim                       # uses ./simulation.yml by default
+./queuesim -config=other.yml     # custom scenario
 ```
 
 Cross-compiling locally (same matrix the CI uses):
@@ -136,53 +124,86 @@ GOOS=darwin  GOARCH=arm64 go build -o dist/queuesim-darwin-arm64 .
 GOOS=windows GOARCH=amd64 go build -o dist/queuesim-windows-amd64.exe .
 ```
 
+## T1 — Validation against `simulator.jar`
+
+The `T1` release is the deliverable for *Trabalho 1*: it bundles the cross-platform binaries together with the `simulation.yml` scenario used for validation. The same parameters can be fed to the academic Java reference simulator (`simulator.jar`) and the two outputs compared side by side.
+
+### Scenario
+
+`simulation.yml` describes a 3-queue network:
+
+| Queue | Type | Service (min) | External arrival (min) | Routes |
+|---|---|---|---|---|
+| Q1 | G/G/1 (∞) | 1.0…2.0 | 2.0…4.0 | → Q2 (0.8) · → Q3 (0.2) |
+| Q2 | G/G/2/5 | 4.0…6.0 | — | → Q1 (0.3) · → Q3 (0.5) · exit (0.2) |
+| Q3 | G/G/2/10 | 5.0…15.0 | — | → Q2 (0.7) · exit (0.3) |
+
+Run with seeds `[1, 2, 3, 4, 5]`, RNG budget `100 000` per seed, first arrival at `t = 1.5`.
+
+### How a reviewer runs the validation
+
+1. Download the `T1` release: <https://github.com/luccaparadeda/M6---Simulacao/releases/tag/T1>
+2. Pick the binary for your platform and put it in the same directory as the bundled `simulation.yml`.
+3. Run it:
+
+   ```bash
+   # macOS Apple Silicon — adjust filename for your platform
+   chmod +x queuesim-darwin-arm64
+   xattr -d com.apple.quarantine queuesim-darwin-arm64
+   ./queuesim-darwin-arm64
+   ```
+
+   No flags are needed — the binary picks up `./simulation.yml` automatically.
+
+4. (Optional) Re-run the academic Java simulator with the equivalent `model.yml` and compare:
+
+   ```bash
+   docker compose run --rm simulator
+   ```
+
+   Both reports use the same banner, per-queue G/G/c/K block, and footer, so a line-by-line diff is meaningful.
+
+### Expected agreement
+
+The two simulators use different LCG constants, so individual sample paths will differ. Under identical parameters they nevertheless converge to the same steady-state distribution — in the validation run, probabilities agreed to within **≤0.5 percentage points**, losses within **~0.6%**, and the simulation average time within **~0.06%**.
+
 ## Sample output
 
-Running the default scenario (`Tandem G/G/2/3 → G/G/1/5`, LCG seed `12345`, 100 000 RNG budget):
+Running with the bundled `simulation.yml` produces output in the academic report format:
 
 ```
-============================================================
-  RELATÓRIO FINAL DA SIMULAÇÃO
-============================================================
-Tempo global total: 63035.7029
-Números aleatórios consumidos: 100000
+Simulation: #1
+...simulating with random numbers (seed '1')...
+Simulation: #2
+...simulating with random numbers (seed '2')...
+...
+=========================================================
+=================    END OF SIMULATION   ================
+=========================================================
 
----- Fila Q1 (G/G/2/3) ----
-  Perdas: 61
-  Estado   Tempo Acum.     Probabilidade
-  0        1255.2553       0.019913
-  1        35897.0423      0.569472
-  2        23922.1084      0.379501
-  3        1961.2969       0.031114
-  Tempo total observado: 63035.7029
+=========================================================
+======================    REPORT   ======================
+=========================================================
+*********************************************************
+Queue:   Q1 (G/G/1)
+Arrival: 2.0 ... 4.0
+Service: 1.0 ... 2.0
+*********************************************************
+   State               Time               Probability
+      0           66335.6520                32.24%
+      1          108714.1723                52.84%
+      2           28267.1322                13.74%
+      3            2350.9593                 1.14%
+      4              66.8835                 0.03%
+      5               1.2698                 0.00%
 
----- Fila Q2 (G/G/1/5) ----
-  Perdas: 335
-  ...
-```
+Number of losses: 0
 
-## Event log (CSV)
+...
 
-When run with `-log=simulation.csv`, the simulator writes a detailed CSV with one row per event. This file can be opened in Excel, Google Sheets, or processed with pandas/R for custom analysis.
-
-| Column | Description |
-|---|---|
-| `rng_count` | Total RNG numbers consumed so far |
-| `time` | Simulation clock at the moment of the event |
-| `event` | `ARRIVAL`, `DEPARTURE`, `LOSS`, `SCHEDULE`, or `STOP` |
-| `queue` | Which queue the event belongs to |
-| `detail` | Human-readable description (service duration, route, loss reason) |
-| `<QueueID>_pop` | Population snapshot of each queue after the event |
-| `<QueueID>_losses` | Cumulative losses of each queue after the event |
-
-Sample rows:
-
-```csv
-rng_count,time,event,queue,detail,Q1_pop,Q1_losses,Q2_pop,Q2_losses
-1,1.5000,ARRIVAL,Q1,"admitted, service starts (dur=3.0204)",1,0,0,0
-2,1.5000,SCHEDULE,Q1,next arrival at 2.5496,1,0,0,0
-6,4.5204,DEPARTURE,Q1,"service complete, route -> Q2",1,0,0,0
-6,4.5204,ARRIVAL,Q2,"routed from Q1, service starts (dur=2.1125)",1,0,1,0
+=========================================================
+Simulation average time: 41147.2138
+=========================================================
 ```
 
 ## How the simulator works
@@ -195,7 +216,7 @@ rng_count,time,event,queue,detail,Q1_pop,Q1_losses,Q2_pop,Q2_losses
 
 ### RNG — Linear Congruential Generator
 
-`Xₙ₊₁ = (a · Xₙ + c) mod M` with `a = 1 664 525`, `c = 1 013 904 223`, `M = 2³²`, seed `12345`. This is Numerical Recipes' LCG — good enough for coursework and, critically, deterministic and portable.
+`Xₙ₊₁ = (a · Xₙ + c) mod M` with `a = 1 664 525`, `c = 1 013 904 223`, `M = 2³²`. This is Numerical Recipes' LCG — good enough for coursework and, critically, deterministic and portable. Each seed listed under `simulation.seeds` initializes a fresh generator for that run.
 
 ## Business rules
 
@@ -204,7 +225,7 @@ These are the conventions the simulator adopts. They match the ones typically as
 | Rule | Decision |
 |---|---|
 | Initial queue population | Empty (all queues start at 0). |
-| First external arrival | Injected at a fixed time `t₀` (default `1.5`). **Does not consume an RNG** — it is an input, not a sample. |
+| First external arrival | Injected at the time configured in `simulation.firstArrival.time`. **Does not consume an RNG** — it is an input, not a sample. |
 | Sampling the next external arrival | Consumes **1 RNG**. |
 | Sampling a service time | Consumes **1 RNG** each time a server starts serving a customer. |
 | Sampling a route | Consumes **1 RNG** whenever the source queue has a routing table, **even if the routing is deterministic** (a single route with probability 1.0). This matches the standard academic convention. |
@@ -219,7 +240,10 @@ These are the conventions the simulator adopts. They match the ones typically as
 
 ```
 .
-├── main.go                 # default scenario + entrypoint
+├── main.go                 # CLI entrypoint: loads YAML, runs N seeds, prints report
+├── simulation.yml          # default scenario fed to the simulator
+├── config/
+│   └── config.go           # YAML loader + validator + translator into queue.Config
 ├── rng/
 │   └── rng.go              # LCG with hard consumption budget
 ├── queue/
@@ -227,7 +251,7 @@ These are the conventions the simulator adopts. They match the ones typically as
 ├── scheduler/
 │   └── scheduler.go        # min-heap of timed events
 ├── logger/
-│   └── logger.go           # CSV event logger
+│   └── logger.go           # CSV/JSON event logger (library; not exposed via CLI in this build)
 ├── sim/
 │   └── sim.go              # Simulator + Router interface + ProbabilityRouter
 ├── .github/workflows/build.yml
@@ -238,51 +262,53 @@ These are the conventions the simulator adopts. They match the ones typically as
 
 ## Configuration
 
-The scenario lives in `main.go` as a slice of `queue.Config`:
+The scenario is fully described by `simulation.yml`:
 
-```go
-configs := []queue.Config{
-    {
-        ID:          "Q1",
-        Servers:     2,
-        Capacity:    3,
-        ArrivalMin:  1, ArrivalMax: 4,
-        ServiceMin:  3, ServiceMax: 4,
-        HasExternal: true,
-        Routes:      []queue.Route{{ID: "Q2", Probability: 1.0}},
-    },
-    {
-        ID:         "Q2",
-        Servers:    1,
-        Capacity:   5,
-        ServiceMin: 2, ServiceMax: 3,
-    },
-}
+```yaml
+simulation:
+  seeds: [1, 2, 3, 4, 5]   # one independent run per seed
+  rngPerSeed: 100000       # RNG budget per run
+  firstArrival:
+    queue: Q1
+    time: 1.5
 
-r := rng.NewLCG(12345, 100_000)
-s := sim.New(configs, r)
-s.ScheduleFirstArrival("Q1", 1.5)
-s.Run()
-s.Report()
+queues:
+  - id: Q1
+    servers: 1             # G/G/1 with infinite capacity (omit `capacity`)
+    service: { min: 1.0, max: 2.0 }
+    arrival: { min: 2.0, max: 4.0 }   # only on entry queues
+    routes:
+      - { to: Q2, probability: 0.8 }
+      - { to: Q3, probability: 0.2 }
+
+  - id: Q2
+    servers: 2
+    capacity: 5
+    service: { min: 4.0, max: 6.0 }
+    routes:
+      - { to: Q1, probability: 0.3 }
+      - { to: Q3, probability: 0.5 }   # residual 0.2 → exit
 ```
 
 | Field | Meaning |
 |---|---|
-| `ID` | Queue identifier (any unique string). |
-| `Servers` | Number of parallel servers (`c`). |
-| `Capacity` | Total capacity (`K`). Use `-1` for infinite. |
-| `ArrivalMin/Max` | Uniform interval for **external** inter-arrival times. |
-| `ServiceMin/Max` | Uniform interval for service times. |
-| `HasExternal` | `true` if the queue receives external arrivals. |
-| `Routes` | Slice of `{ID, Probability}`. Residual probability = exit. |
+| `simulation.seeds` | List of LCG seeds. The simulator runs one full pass per seed and the report aggregates state-times across them. |
+| `simulation.rngPerSeed` | RNG budget for each individual run. |
+| `simulation.firstArrival.queue` / `.time` | Which queue receives the first external arrival, and at what clock time. |
+| `queues[].id` | Queue identifier (any unique string). |
+| `queues[].servers` | Number of parallel servers (`c`). |
+| `queues[].capacity` | Total capacity (`K`). **Omit** for infinite. |
+| `queues[].service.{min,max}` | Uniform interval for service times. |
+| `queues[].arrival.{min,max}` | Uniform interval for **external** inter-arrival times. Omit if the queue has no external arrivals. |
+| `queues[].routes` | List of `{to, probability}`. Residual probability (`1 − Σ`) = exit from the system. |
 
 ## Extending to arbitrary topologies
 
-The default `ProbabilityRouter` is driven entirely by each queue's `Routes`, so:
+Edit `simulation.yml`:
 
-- Add more queues to `configs`.
-- Set `Routes` on any queue with the desired probabilities.
-- Any queue with `HasExternal = true` can be an entry point.
+- Add more queue blocks under `queues:`.
+- Set `routes` on any queue with the desired probabilities.
+- Any queue with an `arrival` block can be an entry point — name it under `firstArrival.queue`.
 
 To implement a different routing policy (e.g., *join-the-shortest-queue*), implement the `sim.Router` interface:
 
@@ -302,13 +328,20 @@ The `.github/workflows/build.yml` workflow:
 - Cross-compiles `queuesim` for `linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64`, `windows/amd64` with `CGO_ENABLED=0` (fully static binaries).
 - Uploads each binary as a workflow artifact.
 - On every push to `main`, updates a rolling **"Latest (main)"** pre-release with fresh binaries.
-- When a tag `v*` is pushed, creates a versioned GitHub Release with auto-generated release notes.
+- When a tag matching `v*` **or** `T*` is pushed, creates a versioned GitHub Release. The release bundle includes every binary plus the current `simulation.yml`, so a reviewer can download a single zip and run.
 
 To cut a versioned release:
 
 ```bash
 git tag v0.1.0
 git push origin v0.1.0
+```
+
+To cut a course-deliverable release (e.g. T1):
+
+```bash
+git tag T1
+git push origin T1
 ```
 
 ## Contributing

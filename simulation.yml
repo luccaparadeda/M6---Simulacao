@@ -1,0 +1,30 @@
+simulation:
+  seeds: [1]
+  rngPerSeed: 100000
+  firstArrival:
+    queue: Q1
+    time: 2.0
+
+queues:
+  - id: Q1
+    servers: 1
+    service: { min: 1.0, max: 2.0 }
+    arrival: { min: 2.0, max: 4.0 }
+    routes:
+      - { to: Q2, probability: 0.8 }
+      - { to: Q3, probability: 0.2 }
+
+  - id: Q2
+    servers: 2
+    capacity: 5
+    service: { min: 4.0, max: 6.0 }
+    routes:
+      - { to: Q1, probability: 0.3 }
+      - { to: Q3, probability: 0.5 }
+
+  - id: Q3
+    servers: 2
+    capacity: 10
+    service: { min: 5.0, max: 15.0 }
+    routes:
+      - { to: Q2, probability: 0.7 }
