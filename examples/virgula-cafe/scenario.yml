@@ -1,0 +1,43 @@
+simulation:
+  seeds: [1, 2, 3, 4, 5]
+  rngPerSeed: 100000
+  firstArrival:
+    queue: F1
+    time: 2.0
+
+queues:
+  # F1 — Atendimento (front counter): takes the order and processes payment.
+  # External arrivals U(1, 3) min — busy-hour demand. No customer exits the
+  # system here; everyone is routed to either F2 (drinks) or F3 (food).
+  - id: F1
+    servers: 2
+    capacity: 10
+    service: { min: 1.0, max: 3.0 }
+    arrival: { min: 1.0, max: 3.0 }
+    routes:
+      - { to: F2, probability: 0.70 }
+      - { to: F3, probability: 0.30 }
+
+  # F2 — Baristas: prepare drinks. Designed bottleneck.
+  # Outgoing: 85 % exit (drink served — residual), 10 % to F3 (customer adds
+  # a pastry on the way out), 5 % back to F1 (drink was wrong, customer
+  # returns to the counter).
+  - id: F2
+    servers: 2
+    capacity: 6
+    service: { min: 4.0, max: 8.0 }
+    routes:
+      - { to: F3, probability: 0.10 }
+      - { to: F1, probability: 0.05 }
+
+  # F3 — Padaria / Expedição: heats and packages food, also passes drink-combo
+  # orders back to F2 to be paired. Outgoing: 90 % exit (residual), 8 % to
+  # F2 (combo: needs a drink prepared), 2 % back to F1 (wrong item, return
+  # to counter).
+  - id: F3
+    servers: 1
+    capacity: 5
+    service: { min: 2.0, max: 5.0 }
+    routes:
+      - { to: F2, probability: 0.08 }
+      - { to: F1, probability: 0.02 }

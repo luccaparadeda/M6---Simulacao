@@ -78,6 +78,9 @@ jobs:
       - name: Stage simulation.yml alongside binaries
         run: cp simulation.yml dist/simulation.yml
 
+      - name: Stage examples folder
+        run: cp -R examples dist/examples
+
       - name: List release files
         run: ls -lh dist
 

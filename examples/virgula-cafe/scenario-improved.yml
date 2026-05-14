@@ -1,0 +1,38 @@
+simulation:
+  seeds: [1, 2, 3, 4, 5]
+  rngPerSeed: 100000
+  firstArrival:
+    queue: F1
+    time: 2.0
+
+# Proposta de melhoria: contratar um terceiro barista.
+# Todos os outros parâmetros (capacidades, tempos de serviço, probabilidades
+# de roteamento e tempo de chegada externa) permanecem idênticos ao cenário
+# inicial. A única alteração é F2.servers: 2 -> 3.
+
+queues:
+  - id: F1
+    servers: 2
+    capacity: 10
+    service: { min: 1.0, max: 3.0 }
+    arrival: { min: 1.0, max: 3.0 }
+    routes:
+      - { to: F2, probability: 0.70 }
+      - { to: F3, probability: 0.30 }
+
+  # F2 — Baristas: 3 servidores (era 2).
+  - id: F2
+    servers: 3
+    capacity: 6
+    service: { min: 4.0, max: 8.0 }
+    routes:
+      - { to: F3, probability: 0.10 }
+      - { to: F1, probability: 0.05 }
+
+  - id: F3
+    servers: 1
+    capacity: 5
+    service: { min: 2.0, max: 5.0 }
+    routes:
+      - { to: F2, probability: 0.08 }
+      - { to: F1, probability: 0.02 }
